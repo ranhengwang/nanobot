@@ -23,13 +23,13 @@ class Session:
     The consolidation process writes summaries to MEMORY.md/HISTORY.md
     but does NOT modify the messages list or get_history() output.
     """
-
+    
     key: str  # channel:chat_id
     messages: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
-    last_consolidated: int = 0  # Number of messages already consolidated to files
+    last_consolidated: int = 0  # Number of messages already consolidated(合并) to files  一个游标，标记已经被整合到长期记忆的消息边界
     
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -43,16 +43,22 @@ class Session:
         self.updated_at = datetime.now()
     
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
-        """Return unconsolidated messages for LLM input, aligned to a user turn."""
+        """获取构建 LLM 上下文所需的对话历史记录。
+        Return unconsolidated messages for LLM input, aligned to a user turn."""
+        # 提取末尾未整合的消息
         unconsolidated = self.messages[self.last_consolidated:]
+        # 限制最大长度（截断）
         sliced = unconsolidated[-max_messages:]
 
         # Drop leading non-user messages to avoid orphaned tool_result blocks
+        # 如果开头有一些系统消息或工具调用结果，但没有对应的用户消息，那么就把它们丢掉，直到遇到第一个用户消息为止。
+        # 这样可以避免在 LLM 上下文中出现孤立的工具结果块。
         for i, m in enumerate(sliced):
             if m.get("role") == "user":
                 sliced = sliced[i:]
                 break
 
+        # 精简并构建标准输出结构
         out: list[dict[str, Any]] = []
         for m in sliced:
             entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
@@ -71,6 +77,8 @@ class Session:
 
 class SessionManager:
     """
+    负责管理整个系统的对话会话（Session），处理会话的持久化、缓存和生命周期。
+    所有会话以 JSONL（每行一个 JSON 对象的文本文件） 的格式存储
     Manages conversation sessions.
 
     Sessions are stored as JSONL files in the sessions directory.
@@ -80,6 +88,7 @@ class SessionManager:
         self.workspace = workspace
         self.sessions_dir = ensure_dir(self.workspace / "sessions")
         self.legacy_sessions_dir = Path.home() / ".nanobot" / "sessions"
+        # 维护了一个内存级别的会话缓存 self._cache，避免频繁读写磁盘
         self._cache: dict[str, Session] = {}
     
     def _get_session_path(self, key: str) -> Path:
@@ -113,7 +122,8 @@ class SessionManager:
         return session
     
     def _load(self, key: str) -> Session | None:
-        """Load a session from disk."""
+        """从磁盘上读取指定的会话（Session）数据
+        Load a session from disk."""
         path = self._get_session_path(key)
         if not path.exists():
             legacy_path = self._get_legacy_session_path(key)
@@ -164,6 +174,7 @@ class SessionManager:
         path = self._get_session_path(session.key)
 
         with open(path, "w", encoding="utf-8") as f:
+            # 将session的元素据存入json文件
             metadata_line = {
                 "_type": "metadata",
                 "key": session.key,
@@ -173,6 +184,7 @@ class SessionManager:
                 "last_consolidated": session.last_consolidated
             }
             f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
+            # 将消息存入json文件
             for msg in session.messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
@@ -183,7 +195,7 @@ class SessionManager:
         self._cache.pop(key, None)
     
     def list_sessions(self) -> list[dict[str, Any]]:
-        """
+        """逐个加载文件夹下的会话文件，读取它们的元数据（如创建时间、更新时间等），并返回一个会话列表，供系统展示和管理。
         List all sessions.
         
         Returns:

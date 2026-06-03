@@ -42,7 +42,8 @@ class LLMProvider(ABC):
 
     @staticmethod
     def _sanitize_empty_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Replace empty text content that causes provider 400 errors.
+        """清理和规范化对话消息列表中的空内容
+        Replace empty text content that causes provider 400 errors.
 
         Empty content can appear when MCP tools return nothing. Most providers
         reject empty-string content or empty text blocks in list content.
@@ -50,13 +51,13 @@ class LLMProvider(ABC):
         result: list[dict[str, Any]] = []
         for msg in messages:
             content = msg.get("content")
-
+            # 如果内容是空字符串且角色是带有工具调用的 assistant，则将其设为 None；否则替换为占位符 "(empty)"。
             if isinstance(content, str) and not content:
                 clean = dict(msg)
                 clean["content"] = None if (msg.get("role") == "assistant" and msg.get("tool_calls")) else "(empty)"
                 result.append(clean)
                 continue
-
+            # 如果是多模态或包含多个块的列表，它会过滤掉其中文本为空的块。如果过滤后列表为空，同样会根据角色应用上述的替换逻辑
             if isinstance(content, list):
                 filtered = [
                     item for item in content
@@ -66,8 +67,10 @@ class LLMProvider(ABC):
                         and not item.get("text")
                     )
                 ]
+                # 如果有过滤东西
                 if len(filtered) != len(content):
                     clean = dict(msg)
+                    # 如果有过滤的东西，就用过滤后的内容；否则，如果是带有工具调用的 assistant，设为 None；否则设为 "(empty)"。
                     if filtered:
                         clean["content"] = filtered
                     elif msg.get("role") == "assistant" and msg.get("tool_calls"):

@@ -7,7 +7,8 @@ from typing import Any
 
 @dataclass
 class InboundMessage:
-    """Message received from a chat channel."""
+    """入站消息,表示从外部聊天渠道（如 Telegram, Discord, CLI 等）接收到的用户消息
+    Message received from a chat channel."""
     
     channel: str  # telegram, discord, slack, whatsapp
     sender_id: str  # User identifier
@@ -26,7 +27,8 @@ class InboundMessage:
 
 @dataclass
 class OutboundMessage:
-    """Message to send to a chat channel."""
+    """表示智能体处理完毕后，系统准备发送回对应聊天渠道的响应消息
+    Message to send to a chat channel."""
     
     channel: str
     chat_id: str

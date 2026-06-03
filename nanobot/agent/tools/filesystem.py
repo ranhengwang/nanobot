@@ -8,11 +8,15 @@ from nanobot.agent.tools.base import Tool
 
 
 def _resolve_path(path: str, workspace: Path | None = None, allowed_dir: Path | None = None) -> Path:
-    """Resolve path against workspace (if relative) and enforce directory restriction."""
+    """路径解析辅助函数，将输入路径解析为绝对路径，并进行安全检查。支持相对路径（相对于 workspace）和绝对路径。
+    Resolve path against workspace (if relative) and enforce directory restriction."""
+    # 展开 ~ 符号
     p = Path(path).expanduser()
     if not p.is_absolute() and workspace:
         p = workspace / p
+    # resolve() 规范化（消除 ./ ../ 符号链接）
     resolved = p.resolve()
+    # 若有 allowed_dir → 检查是否在允许目录内
     if allowed_dir:
         try:
             resolved.relative_to(allowed_dir.resolve())

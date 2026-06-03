@@ -11,6 +11,8 @@ from loguru import logger
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
 
+# 一个心跳服务（Heartbeat Service），其主要功能是定期唤醒系统/智能体去检查和执行后台任务。
+
 _HEARTBEAT_TOOL = [
     {
         "type": "function",
@@ -75,6 +77,7 @@ class HeartbeatService:
         return self.workspace / "HEARTBEAT.md"
 
     def _read_heartbeat_file(self) -> str | None:
+        """读取 HEARTBEAT.md 文件内容，如果文件不存在或读取失败则返回 None。"""
         if self.heartbeat_file.exists():
             try:
                 return self.heartbeat_file.read_text(encoding="utf-8")
@@ -87,6 +90,8 @@ class HeartbeatService:
 
         Returns (action, tasks) where action is 'skip' or 'run'.
         """
+        # 大模型需要阅读该 MD 文件，并强制调用该工具，返回一个结构化的 JSON，
+        # 其中 action 只能是 "skip"（没任务）或 "run"（有任务）。如果是 run，还要附带自然语言的任务摘要
         response = await self.provider.chat(
             messages=[
                 {"role": "system", "content": "You are a heartbeat agent. Call the heartbeat tool to report your decision."},
@@ -138,7 +143,8 @@ class HeartbeatService:
                 logger.error("Heartbeat error: {}", e)
 
     async def _tick(self) -> None:
-        """Execute a single heartbeat tick."""
+        """负责执行单次心跳检测（Heartbeat Tick）的完整工作流。
+        Execute a single heartbeat tick."""
         content = self._read_heartbeat_file()
         if not content:
             logger.debug("Heartbeat: HEARTBEAT.md missing or empty")
@@ -147,6 +153,9 @@ class HeartbeatService:
         logger.info("Heartbeat: checking for tasks...")
 
         try:
+            # 将文件内容交给大模型分析。大模型会返回两个值：
+            #     action：决定是否执行（"run" 或 "skip"）。
+            #     tasks：解析出来的具体任务摘要。
             action, tasks = await self._decide(content)
 
             if action != "run":
@@ -154,8 +163,12 @@ class HeartbeatService:
                 return
 
             logger.info("Heartbeat: tasks found, executing...")
+            # 任务执行与回调
             if self.on_execute:
+                # 如果确定有任务，系统会调用初始化时注入的 on_execute 回调函数，
+                # 把大模型总结的 tasks 交给主智能体（AgentLoop）去真正执行
                 response = await self.on_execute(tasks)
+                # 如果任务执行后产生了响应字符串，并且系统配置了通知渠道（on_notify，例如发消息到 Telegram），就会把任务执行结果推送给用户
                 if response and self.on_notify:
                     logger.info("Heartbeat: completed, delivering response")
                     await self.on_notify(response)

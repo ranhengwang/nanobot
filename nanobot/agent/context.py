@@ -26,7 +26,8 @@ class ContextBuilder:
         self.skills = SkillsLoader(workspace)
     
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        """
+        """负责将多个信息源（agent的身份、BOOTSTRAP_FILES里储的md文件、长期记忆、skills）拼装成一个完整的 System Prompt，最终发送给 LLM
+        注意，这里没有注入工具的description，因为工具调用的细节（如参数）会在后续的 messages 中通过 tool_calls 传递给 LLM，而不是直接放在 system prompt 中。
         Build the system prompt from bootstrap files, memory, and skills.
         
         Args:
@@ -35,6 +36,16 @@ class ContextBuilder:
         Returns:
             Complete system prompt.
         """
+        # 执行流程
+        #     parts = []
+        # │
+        # ├─ 1. _get_identity()          → Agent 身份 + 运行环境信息
+        # ├─ 2. _load_bootstrap_files()  → 读取工作区引导文件
+        # ├─ 3. memory.get_memory_context() → 注入长期记忆
+        # ├─ 4. skills.get_always_skills()  → 始终加载的技能（完整内容）
+        # └─ 5. skills.build_skills_summary() → 可用技能摘要（按需加载）
+        # return "\n\n---\n\n".join(parts)
+
         parts = []
         
         # Core identity
@@ -71,15 +82,26 @@ Skills with available="false" need dependencies installed first - you can try in
         return "\n\n---\n\n".join(parts)
     
     def _get_identity(self) -> str:
-        """Get the core identity section."""
+        """生成 Agent 核心身份 System Prompt 的方法
+        它动态收集运行时环境信息，然后拼接成一段结构化的 Markdown 文本，作为 System Prompt 的第一部分注入给 LLM
+        Get the core identity section."""
         from datetime import datetime
         import time as _time
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         tz = _time.strftime("%Z") or "UTC"
         workspace_path = str(self.workspace.expanduser().resolve())
+        # 让 LLM 知道宿主机环境（macOS/Linux/Windows + 架构）
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
-        
+# nanobot 🐈               ← 身份定义
+## Current Time            ← 当前时间 + 时区
+## Runtime                 ← 操作系统 + Python版本
+## Workspace               ← 工作区路径及关键文件位置
+## Tool Call Guidelines    ← 工具调用行为规范（如先读后写）
+## Memory                  ← 长期记忆的读写位置
+
+# HISTORY.md 是 nanobot 的历史日志文件
+
         return f"""# nanobot 🐈
 
 You are nanobot, a helpful AI assistant. 
@@ -110,7 +132,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 - Recall past events: grep {workspace_path}/memory/HISTORY.md"""
     
     def _load_bootstrap_files(self) -> str:
-        """Load all bootstrap files from workspace."""
+        """read读取BOOTSTRAP_FILES下的几个.md文档
+        Load all bootstrap files from workspace."""
         parts = []
         
         for filename in self.BOOTSTRAP_FILES:
@@ -131,6 +154,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """
+        构建发送给 LLM（大语言模型）的完整对话消息列表。它将 System Prompt、历史对话以及用户当前的新消息，按照模型要求的格式按顺序组装起来
         Build the complete message list for an LLM call.
 
         Args:
@@ -156,22 +180,28 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         messages.extend(history)
 
         # Current message (with optional image attachments)
+        # 当前用户消息（如果有媒体附件，则转换为内嵌图片格式）
         user_content = self._build_user_content(current_message, media)
         messages.append({"role": "user", "content": user_content})
 
         return messages
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+        """构建用户消息内容的辅助方法，支持纯文本和图文混合两种格式。
+        如果存在媒体文件路径，会将其转换为 base64 编码的内嵌图片格式，最终返回一个包含文本和图片块的列表；如果没有媒体，则直接返回文本字符串。
+        Build user message content with optional base64-encoded images."""
         if not media:
             return text
         
         images = []
         for path in media:
             p = Path(path)
+            # 根据文件扩展名自动推断 MIME 类型
             mime, _ = mimetypes.guess_type(path)
+            # 过滤非图片文件
             if not p.is_file() or not mime or not mime.startswith("image/"):
                 continue
+            # 将图片二进制转为 base64 字符串，内嵌在 URL 中
             b64 = base64.b64encode(p.read_bytes()).decode()
             images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
         
@@ -181,12 +211,13 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     
     def add_tool_result(
         self,
-        messages: list[dict[str, Any]],
-        tool_call_id: str,
-        tool_name: str,
-        result: str
+        messages: list[dict[str, Any]],     #当前的上下文消息列表
+        tool_call_id: str,      #工具调用的唯一 ID（LLM 在调用工具时生成，工具结果会通过这个 ID 关联回对应的调用）
+        tool_name: str,     #被调用的工具名称
+        result: str     #工具执行后输出的结果
     ) -> list[dict[str, Any]]:
         """
+        将工具执行的结果追加到对话消息列表中。
         Add a tool result to the message list.
         
         Args:
@@ -208,12 +239,13 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     
     def add_assistant_message(
         self,
-        messages: list[dict[str, Any]],
-        content: str | None,
-        tool_calls: list[dict[str, Any]] | None = None,
-        reasoning_content: str | None = None,
+        messages: list[dict[str, Any]],     #当前的对话上下文消息列表
+        content: str | None,        #助手回复的普通文本内容
+        tool_calls: list[dict[str, Any]] | None = None,     #助手发起的工具调用请求列表
+        reasoning_content: str | None = None,       #推理思考过程的内容
     ) -> list[dict[str, Any]]:
         """
+        将 AI 助手（assistant）的回复 追加到对话上下文的消息列表中
         Add an assistant message to the message list.
         
         Args:

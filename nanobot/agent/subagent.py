@@ -16,6 +16,10 @@ from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFile
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 
+# 负责管理 Agent 的后台子代理（Subagent）机制。
+# 子代理是轻量级的、运行在后台的 Agent 实例。它们与主 Agent 共享同一个 LLM Provider，
+# 但拥有独立的、高度专注的上下文和 Prompt，专门用于在后台静默处理耗时或特定的复杂任务，而不阻塞用户的当前对话。
+
 
 class SubagentManager:
     """
@@ -50,6 +54,8 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
     
+    # (启动子代理)接收任务描述，生成唯一的任务 ID，并使用 asyncio.create_task 在后台异步启动 _run_subagent。
+    # 向用户返回一条“任务已在后台启动”的即时反馈
     async def spawn(
         self,
         task: str,
@@ -96,11 +102,13 @@ class SubagentManager:
         label: str,
         origin: dict[str, str],
     ) -> None:
-        """Execute the subagent task and announce the result."""
+        """子代理的实际思考与执行循环（最多允许迭代 15 次）
+        Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
         
         try:
             # Build subagent tools (no message tool, no spawn tool)
+            # 受限的工具注册
             tools = ToolRegistry()
             allowed_dir = self.workspace if self.restrict_to_workspace else None
             tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
@@ -137,7 +145,8 @@ class SubagentManager:
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )
-                
+                # 如果大模型的回复里有工具调用
+                # 解析大模型的回复，然后执行工具，并将工具结果追加到消息列表中
                 if response.has_tool_calls:
                     # Add assistant message with tool calls
                     tool_call_dicts = [
@@ -168,6 +177,7 @@ class SubagentManager:
                             "name": tool_call.name,
                             "content": result,
                         })
+                # 如果没有工具调用，说明任务完成了，记录最终结果并退出循环
                 else:
                     final_result = response.content
                     break
@@ -192,9 +202,12 @@ class SubagentManager:
         origin: dict[str, str],
         status: str,
     ) -> None:
-        """Announce the subagent result to the main agent via the message bus."""
+        """在子代理（Subagent）完成任务或发生错误时，将执行结果通过消息总线汇报给主 Agent
+        Announce the subagent result to the main agent via the message bus."""
         status_text = "completed successfully" if status == "ok" else "failed"
         
+        # 在汇报的文本中，特意附加了一段给主 Agent 的指令：“自然地为用户总结此内容。
+        # 保持简短（1-2句）。不要提及‘子代理’或任务 ID 等技术细节。” 这能引导主 Agent 以自然的口吻将后台结果转述给用户。
         announce_content = f"""[Subagent '{label}' {status_text}]
 
 Task: {task}
@@ -205,6 +218,7 @@ Result:
 Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
         
         # Inject as system message to trigger main agent
+        # 构造并发送系统消息
         msg = InboundMessage(
             channel="system",
             sender_id="subagent",
@@ -216,7 +230,9 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
         logger.debug("Subagent [{}] announced result to {}:{}", task_id, origin['channel'], origin['chat_id'])
     
     def _build_subagent_prompt(self, task: str) -> str:
-        """Build a focused system prompt for the subagent."""
+        """构建子代理（Subagent）专属的系统提示词（System Prompt）。
+        与主 Agent 拥有丰富上下文和长篇历史记忆不同，子代理需要一个极其专注、限制严格的独立上下文环境，以便在后台高效完成单项任务
+        Build a focused system prompt for the subagent."""
         from datetime import datetime
         import time as _time
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
@@ -253,5 +269,6 @@ Skills are available at: {self.workspace}/skills/ (read SKILL.md files as needed
 When you have completed the task, provide a clear summary of your findings or actions."""
     
     def get_running_count(self) -> int:
-        """Return the number of currently running subagents."""
+        """返回当前正在运行的子代理数量，供主 Agent 查询以监控后台任务负载
+        Return the number of currently running subagents."""
         return len(self._running_tasks)

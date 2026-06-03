@@ -22,6 +22,7 @@ class ExecTool(Tool):
     ):
         self.timeout = timeout
         self.working_dir = working_dir
+        #  黑名单拦截（默认拒绝的危险命令）
         self.deny_patterns = deny_patterns or [
             r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
             r"\bdel\s+/[fq]\b",              # del /f, del /q
@@ -33,7 +34,9 @@ class ExecTool(Tool):
             r"\b(shutdown|reboot|poweroff)\b",  # system power
             r":\(\)\s*\{.*\};\s*:",          # fork bomb
         ]
+        # 白名单过滤，若配置了 allow_patterns，命令必须匹配其中至少一条，否则拒绝执行
         self.allow_patterns = allow_patterns or []
+        # 工作区路径限制，拒绝 ../ 或 ..\ 路径穿越，提取命令中所有绝对路径
         self.restrict_to_workspace = restrict_to_workspace
     
     @property
@@ -68,6 +71,7 @@ class ExecTool(Tool):
             return guard_error
         
         try:
+            # 启动子进程
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
@@ -76,6 +80,7 @@ class ExecTool(Tool):
             )
             
             try:
+                # 等待输出 & 超时处理
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
                     timeout=self.timeout
@@ -106,6 +111,7 @@ class ExecTool(Tool):
             result = "\n".join(output_parts) if output_parts else "(no output)"
             
             # Truncate very long output
+            # 截断超长输出
             max_len = 10000
             if len(result) > max_len:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
@@ -116,18 +122,20 @@ class ExecTool(Tool):
             return f"Error executing command: {str(e)}"
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
-        """Best-effort safety guard for potentially destructive commands."""
+        """这是一个三层安全检查函数，在执行命令前进行拦截，返回 None 表示通过，返回错误字符串表示拦截。
+        Best-effort safety guard for potentially destructive commands."""
         cmd = command.strip()
         lower = cmd.lower()
-
+        # 将命令转为小写后逐一匹配黑名单正则，命中任意一条即拒绝执行
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):
                 return "Error: Command blocked by safety guard (dangerous pattern detected)"
-
+        # 仅当 allow_patterns 非空时生效
+        # 命令必须匹配白名单中至少一条，否则拒绝
         if self.allow_patterns:
             if not any(re.search(p, lower) for p in self.allow_patterns):
                 return "Error: Command blocked by safety guard (not in allowlist)"
-
+        # 工作区路径限制:路径穿越检测、绝对路径越界检测
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:
                 return "Error: Command blocked by safety guard (path traversal detected)"

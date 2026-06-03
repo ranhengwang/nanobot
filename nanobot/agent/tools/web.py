@@ -17,7 +17,8 @@ MAX_REDIRECTS = 5  # Limit redirects to prevent DoS attacks
 
 
 def _strip_tags(text: str) -> str:
-    """Remove HTML tags and decode entities."""
+    """移除 HTML 标签（先删除 <script> 和 <style> 块，再去掉所有标签），并解码 HTML 实体
+    Remove HTML tags and decode entities."""
     text = re.sub(r'<script[\s\S]*?</script>', '', text, flags=re.I)
     text = re.sub(r'<style[\s\S]*?</style>', '', text, flags=re.I)
     text = re.sub(r'<[^>]+>', '', text)
@@ -25,13 +26,15 @@ def _strip_tags(text: str) -> str:
 
 
 def _normalize(text: str) -> str:
-    """Normalize whitespace."""
+    """规范化空白字符：合并多余空格和连续空行
+    Normalize whitespace."""
     text = re.sub(r'[ \t]+', ' ', text)
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 
 def _validate_url(url: str) -> tuple[bool, str]:
-    """Validate URL: must be http(s) with valid domain."""
+    """校验 URL 合法性，仅允许 http/https 协议且必须有域名
+    Validate URL: must be http(s) with valid domain."""
     try:
         p = urlparse(url)
         if p.scheme not in ('http', 'https'):
@@ -44,7 +47,8 @@ def _validate_url(url: str) -> tuple[bool, str]:
 
 
 class WebSearchTool(Tool):
-    """Search the web using Brave Search API."""
+    """调用 Brave Search API 进行搜索
+    Search the web using Brave Search API."""
     
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
@@ -62,6 +66,7 @@ class WebSearchTool(Tool):
         self.max_results = max_results
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
+        # query → 调用 Brave API → 解析 JSON → 格式化返回结果
         api_key = self.api_key or os.environ.get("BRAVE_API_KEY", "")
         if not api_key:
             return (
@@ -80,12 +85,13 @@ class WebSearchTool(Tool):
                     timeout=10.0
                 )
                 r.raise_for_status()
-            
+            # 解析json
             results = r.json().get("web", {}).get("results", [])
             if not results:
                 return f"No results for: {query}"
             
             lines = [f"Results for: {query}\n"]
+            # 格式化输出：标题 + URL + 描述（如果有）
             for i, item in enumerate(results[:n], 1):
                 lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
                 if desc := item.get("description"):
@@ -96,7 +102,8 @@ class WebSearchTool(Tool):
 
 
 class WebFetchTool(Tool):
-    """Fetch and extract content from a URL using Readability."""
+    """网页内容抓取
+    Fetch and extract content from a URL using Readability."""
     
     name = "web_fetch"
     description = "Fetch URL and extract readable content (HTML → markdown/text)."
@@ -138,11 +145,13 @@ class WebFetchTool(Tool):
             if "application/json" in ctype:
                 text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
             # HTML
+            # 用 Readability 提取正文，转为 MD/文本
             elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
                 doc = Document(r.text)
                 content = self._to_markdown(doc.summary()) if extractMode == "markdown" else _strip_tags(doc.summary())
                 text = f"# {doc.title()}\n\n{content}" if doc.title() else content
                 extractor = "readability"
+            # 直接返回原始文本 
             else:
                 text, extractor = r.text, "raw"
             

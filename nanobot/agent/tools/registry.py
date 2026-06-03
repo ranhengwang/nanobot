@@ -6,13 +6,14 @@ from nanobot.agent.tools.base import Tool
 
 
 class ToolRegistry:
-    """
+    """智能体系统中的工具注册表，用于集中管理和动态调度系统提供的外部工具（Tools），供大语言模型（LLM）调用
     Registry for agent tools.
     
     Allows dynamic registration and execution of tools.
     """
     
     def __init__(self):
+        # 维护了一个字典 self._tools，将工具名称字符串映射到 Tool 实例
         self._tools: dict[str, Tool] = {}
     
     def register(self, tool: Tool) -> None:
@@ -32,11 +33,13 @@ class ToolRegistry:
         return name in self._tools
     
     def get_definitions(self) -> list[dict[str, Any]]:
-        """Get all tool definitions in OpenAI format."""
+        """导出工具模式，遍历所有注册项，调用每个工具的 to_schema() 方法生成列表。
+        作用是将定义导出为 OpenAI 标准的工具 JSON Schema 格式
+        Get all tool definitions in OpenAI format."""
         return [tool.to_schema() for tool in self._tools.values()]
     
     async def execute(self, name: str, params: dict[str, Any]) -> str:
-        """
+        """安全封装的异步方法，输入工具名和参数集，进行动态调用
         Execute a tool by name with given parameters.
         
         Args:

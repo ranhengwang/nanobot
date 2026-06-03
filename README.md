@@ -1015,3 +1015,10 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 <p align="center">
   <sub>nanobot is for educational, research, and technical exchange purposes only</sub>
 </p>
+
+
+
+# Created config at 
+/data/root/.nanobot/config.json
+
+vllm serve /data/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B --port 8000
